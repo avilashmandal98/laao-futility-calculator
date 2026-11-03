@@ -53,9 +53,10 @@
    <div class="section-title">Patient variables</div>
    <div class="grid" id="inputs"></div>
    <div class="recal">
-     <label>Optional &mdash; recalibrate to your population <span class="hint">enter your center's observed 1-year all-cause mortality after LAAO (%)</span></label>
+     <label for="siteRate">Optional &mdash; recalibrate to your population <span class="hint">enter your center's observed 1-year all-cause mortality after LAAO (%)</span></label>
      <input id="siteRate" type="number" step="any" placeholder="e.g. 12  (leave blank to use the development calibration, 8.3%)" style="max-width:420px">
    </div>
+   <p id="inputStatus" role="status" aria-live="polite" style="line-height:1.5"></p>
    <div class="action-row">
      <button onclick="run()">Calculate 1-year risk</button>
      <span class="action-note">Blank predictor fields use the development-cohort median.</span>
@@ -70,7 +71,7 @@
    </div>
    <div id="recalNote" style="font-size:12px;color:#5a6572;margin-top:10px"></div>
    <hr style="border:0;border-top:1px solid #edf1f6;margin:16px 0">
-   <div style="font-size:13px;font-weight:600;color:#39424e;margin-bottom:8px">What is driving this estimate <span class="hint">(marginal change vs a typical/median patient; approximate, not exact Shapley)</span></div>
+   <div style="font-size:13px;font-weight:600;color:#39424e;margin-bottom:8px">What is driving this estimate <span class="hint">(percentage-point change vs a median patient, varying one predictor at a time; not additive or exact Shapley values)</span></div>
    <div id="bars"></div>
  </div>
  <div class="disc"><b>Research use only &mdash; not a validated clinical decision tool.</b> Derived from retrospective de-identified data; not prospectively validated. Absolute percentages were calibrated to the development population; the optional recalibration corrects the <i>average level</i> (calibration-in-the-large) but not the calibration <i>slope</i> &mdash; a full recalibration needs your site's own paired predictions and outcomes. Prefer the <b>risk band / relative stratification</b> over the exact percentage. Does not account for procedural details, device type, frailty, or goals of care. High predicted mortality flags competing risk for shared decision-making; it is not an exclusion rule.</div>
@@ -81,7 +82,7 @@ var B={"features": ["age", "albumin", "egfr", "hgb", "bmi"], "median": {"age": 7
 var order=["age","hgb","egfr","albumin","bmi"];
 var ig=document.getElementById("inputs");
 order.forEach(function(f){var d=document.createElement("div");
-  d.innerHTML='<label>'+B.labels[f]+' <span class="hint">('+B.units[f]+', typ. '+B.typical[f]+')</span></label><input id="in_'+f+'" type="number" step="any" placeholder="median '+(Math.round(B.median[f]*10)/10)+'">';
+  d.innerHTML='<label for="in_'+f+'">'+B.labels[f]+' <span class="hint">('+B.units[f]+', typ. '+B.typical[f]+')</span></label><input id="in_'+f+'" type="number" step="any" placeholder="median '+(Math.round(B.median[f]*10)/10)+'">';
   ig.appendChild(d);});
 function fr(x){return Math.fround(x);}
 function scaleIn(vals){var x=[];for(var i=0;i<B.features.length;i++){var f=B.features[i];var v=vals[f];
@@ -92,7 +93,33 @@ function evalTree(n,x){while(!('leaf' in n)){var f=parseInt(n.split.slice(1));n=
 function margin(x){var s=B.base_margin;for(var i=0;i<B.trees.length;i++)s+=evalTree(B.trees[i],x);return s;}
 function sig(z){return 1/(1+Math.exp(-z));}
 function bandInfo(p){if(p<0.05)return["Favorable – low competing mortality","var(--green)"];if(p<0.15)return["Intermediate","var(--amber)"];return["High competing-mortality risk","var(--red)"];}
+function invalidateResult(){
+  document.getElementById("res").style.display="none";
+  document.getElementById("inputStatus").textContent="Inputs changed. Calculate again to update the estimate.";
+}
+document.getElementById("inputs").addEventListener("input",invalidateResult);
+document.getElementById("siteRate").addEventListener("input",invalidateResult);
 function run(){
+  document.getElementById("res").style.display="none";
+  var status=document.getElementById("inputStatus");
+  var notes=[], invalid=null;
+  order.concat(["siteRate"]).forEach(function(f){
+    var el=document.getElementById(f==="siteRate"?f:"in_"+f);
+    el.setCustomValidity("");
+    var v=el.value===""?null:Number(el.value);
+    var message="";
+    if(el.validity.badInput || (v!==null && !Number.isFinite(v))) message="Enter a finite number.";
+    else if(f==="siteRate" && v!==null && !(v>0 && v<100)) message="Enter a mortality rate greater than 0 and less than 100%, or leave blank.";
+    else if(f!=="siteRate" && v!==null && v<=0) message="Enter a value greater than zero, or leave blank to use the development median.";
+    if(message){el.setCustomValidity(message);if(!invalid)invalid=el;}
+    else if(f!=="siteRate"){
+      if(v===null) notes.push(B.labels[f]+": using development median "+B.median[f]+" "+B.units[f]+".");
+      else if(v<B.min[f] || v>B.max[f]) notes.push(B.labels[f]+": entered "+v+"; model uses "+Math.max(B.min[f],Math.min(B.max[f],v))+" "+B.units[f]+" (model bounds "+B.min[f]+"–"+B.max[f]+").");
+    }
+  });
+  if(invalid){status.textContent="Correct the highlighted input before calculating.";invalid.reportValidity();return;}
+  status.textContent=notes.length?notes.join(" "):"All patient inputs supplied within model bounds.";
+
   var vals={};order.forEach(function(f){var el=document.getElementById("in_"+f);var v=el.value===""?null:parseFloat(el.value);vals[f]=v;});
   var z=margin(scaleIn(vals)); var rawP=sig(z);
   // optional calibration-in-the-large
@@ -115,7 +142,7 @@ function run(){
   contribs.forEach(function(c){var w=Math.abs(c[1])/mx*46;var pos=c[1]>=0;
     html+='<div class="bar-row"><div class="bar-lab">'+B.labels[c[0]]+'</div><div class="bar-track"><div class="mid"></div>'
       +'<div class="bar" style="background:'+(pos?"var(--red)":"var(--teal)")+';'+(pos?"left:50%;width:"+w+"%":"right:50%;width:"+w+"%")+'"></div></div>'
-      +'<div class="bar-val">'+(pos?"+":"")+(c[1]*100).toFixed(1)+"%</div></div>";});
+      +'<div class="bar-val">'+(pos?"+":"")+(c[1]*100).toFixed(1)+" pp</div></div>";});
   document.getElementById("bars").innerHTML=html;
   document.getElementById("pctl").innerHTML="Typical (median) patient on this scale: "+(baseP*100).toFixed(1)+"%<br><span style=\"color:var(--red)\">red raises risk</span> / <span style=\"color:var(--teal)\">teal lowers risk</span>";
   document.getElementById("foot").textContent="Model: 5-variable XGBoost (400 trees), internal test AUC 0.73 / external 0.70. Missing inputs imputed with development medians ("+order.map(function(f){return B.labels[f]+" "+(Math.round(B.median[f]*10)/10);}).join(", ")+").";
